@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"embed"
 	"math/big"
-	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -48,8 +47,7 @@ var (
 	EventBus *eventbus.Bus
 
 	// Performance improvements
-	messageWorkerPool   chan struct{} // Semaphore for limiting concurrent message processing
-	optimizedHTTPClient *http.Client  // HTTP client with connection pooling and timeouts
+	messageWorkerPool chan struct{} // Semaphore for limiting concurrent message processing
 
 	// Simple cache for frequently accessed data
 	statusCache struct {
@@ -306,17 +304,6 @@ func (t *Tgbot) Start(i18nFS embed.FS) error {
 	// Initialize worker pool for concurrent message processing (max 10 concurrent handlers)
 	messageWorkerPool = make(chan struct{}, 10)
 
-	// Initialize optimized HTTP client with connection pooling
-	optimizedHTTPClient = &http.Client{
-		Timeout: 15 * time.Second,
-		Transport: &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     30 * time.Second,
-			DisableKeepAlives:   false,
-		},
-	}
-
 	t.SetHostname()
 
 	// Get Telegram bot token
@@ -408,6 +395,7 @@ func (t *Tgbot) trySetBotCommands(bot *telego.Bot) {
 			{Command: "inbound", Description: t.I18nBot("tgbot.commands.inboundDesc")},
 			{Command: "restart", Description: t.I18nBot("tgbot.commands.restartDesc")},
 			{Command: "clearall", Description: t.I18nBot("tgbot.commands.clearallDesc")},
+			{Command: "broadcast", Description: t.I18nBot("tgbot.commands.broadcastDesc")},
 		},
 	})
 	if err != nil {
@@ -542,6 +530,7 @@ func StopBot() {
 
 	userStateMgr.reset()
 	addClientDrafts.resetAll()
+	broadcastResetAll()
 
 	if handler != nil {
 		_ = handler.Stop()
