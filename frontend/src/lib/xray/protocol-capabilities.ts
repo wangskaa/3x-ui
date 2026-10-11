@@ -1,6 +1,6 @@
 // Pure-function ports of the legacy Inbound class capability predicates
 // (canEnableTls, canEnableReality, canEnableTlsFlow, canEnableStream,
-// canEnableVisionSeed, isSS2022, isSSMultiUser). Each accepts the minimal
+// canEnableVisionSeed, isSS2022). Each accepts the minimal
 // slice of an InboundFormValues it needs, so the same predicate can be
 // called against a partial-row, a full form value, or a hand-built test
 // fixture without the caller projecting a whole object.
@@ -17,10 +17,10 @@ const STREAM_PROTOCOLS = [
   'hysteria',
   'wireguard',
   'tunnel',
+  'masque',
 ];
 const VISION_FLOW = 'xtls-rprx-vision';
 const SS_2022_PREFIX = '2022';
-const SS_BLAKE3_CHACHA20 = '2022-blake3-chacha20-poly1305';
 
 export interface CapabilityProtocolSlice {
   protocol: string;
@@ -37,9 +37,18 @@ export interface CapabilityShadowsocksSlice extends CapabilityProtocolSlice {
 }
 
 export function canEnableTls(values: CapabilityProtocolSlice): boolean {
-  if (values.protocol === 'hysteria') return true;
+  if (values.protocol === 'hysteria' || values.protocol === 'masque') return true;
   if (!TLS_ELIGIBLE_PROTOCOLS.includes(values.protocol)) return false;
   return TLS_NETWORKS.includes(values.streamSettings?.network ?? '');
+}
+
+// An XDRIVE outbound's tlsSettings shape only its HTTPS calls to the storage API (SNI, uTLS
+// fingerprint); xray-core 26.10.10 reads them on the dial side, never on a listener.
+export function canEnableOutboundTls(values: CapabilityProtocolSlice): boolean {
+  if (canEnableTls(values)) return true;
+  return (
+    TLS_ELIGIBLE_PROTOCOLS.includes(values.protocol) && values.streamSettings?.network === 'xdrive'
+  );
 }
 
 export function canEnableReality(values: CapabilityProtocolSlice): boolean {
@@ -91,15 +100,6 @@ export function canEnableVisionSeed(values: CapabilityVlessSlice): boolean {
   const clients = values.settings?.clients;
   if (!Array.isArray(clients)) return false;
   return clients.some((c) => c?.flow === VISION_FLOW);
-}
-
-// Why: legacy returns true on non-SS protocols too (the method getter
-// resolves to "" and "" !== blake3-chacha20-poly1305). Preserved for
-// parity with the legacy class; in practice the callers all narrow on
-// protocol === shadowsocks before checking.
-export function isSSMultiUser(values: CapabilityShadowsocksSlice): boolean {
-  const method = values.protocol === 'shadowsocks' ? (values.settings?.method ?? '') : '';
-  return method !== SS_BLAKE3_CHACHA20;
 }
 
 export function isSS2022(values: CapabilityShadowsocksSlice): boolean {

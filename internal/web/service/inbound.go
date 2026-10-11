@@ -656,6 +656,7 @@ func (s *InboundService) normalizeStreamSettings(inbound *model.Inbound) {
 		model.Hysteria:    true,
 		model.WireGuard:   true,
 		model.Tunnel:      true,
+		model.MASQUE:      true,
 	}
 
 	if !protocolsWithStream[inbound.Protocol] {
@@ -666,8 +667,8 @@ func (s *InboundService) normalizeStreamSettings(inbound *model.Inbound) {
 	inbound.StreamSettings = canonicalizeLegacyXdnsMasks(inbound.StreamSettings)
 }
 
-// canonicalizeLegacyXdnsMasks stores an xdns mask posted in the pre-26.9.30 string
-// lists in the object shape the core parses, as GetXrayConfig would heal it anyway.
+// canonicalizeLegacyXdnsMasks stores an xdns mask posted in a pre-26.10.10 shape in
+// the names/addrs lists the core reads, as GetXrayConfig would heal it anyway.
 func canonicalizeLegacyXdnsMasks(streamSettings string) string {
 	if streamSettings == "" {
 		return streamSettings
@@ -994,6 +995,25 @@ func validateFinalMaskXmcProfiles(streamSettings string) error {
 	return common.NewError("XMC finalmask requires at least one complete Minecraft profile — each needs a username (3-16 of A-Z a-z 0-9 _), a UUID, and both texture fields from Mojang's session server (XTLS/Xray-core#6487). Complete the profiles or remove the XMC mask.")
 }
 
+// validateFinalMaskSalamander refuses at save a salamander password the core loads and then refuses
+// when the listener opens, which stops every other inbound with it.
+func validateFinalMaskSalamander(streamSettings string) error {
+	var stream map[string]any
+	if json.Unmarshal([]byte(streamSettings), &stream) != nil {
+		return nil
+	}
+	return maskcompat.CheckSalamanderPasswords(stream["finalmask"])
+}
+
+// validateFinalMaskJSONSalamander checks a stored whole finalmask: a host's, or the subscription's.
+func validateFinalMaskJSONSalamander(finalmask string) error {
+	var fm map[string]any
+	if json.Unmarshal([]byte(finalmask), &fm) != nil {
+		return nil
+	}
+	return maskcompat.CheckSalamanderPasswords(fm)
+}
+
 // normalizeMtprotoSecret rebuilds every mtproto client's FakeTLS secret so it is
 // always valid before the row is persisted, and drops the vestigial inbound-level
 // secret and adTag: MTProto is multi-client, so mtg and every share link read
@@ -1155,6 +1175,12 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	if err := validateFinalMaskXmcProfiles(inbound.StreamSettings); err != nil {
 		return inbound, false, err
 	}
+	if err := validateFinalMaskSalamander(inbound.StreamSettings); err != nil {
+		return inbound, false, err
+	}
+	if err := validateShadowsocks2022Inbound(inbound.Protocol, inbound.Settings); err != nil {
+		return inbound, false, err
+	}
 	s.normalizeMtprotoSecret(inbound)
 	if err := s.normalizeMtprotoXrayPort(inbound, ""); err != nil {
 		return inbound, false, err
@@ -1241,7 +1267,7 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	// Secure client ID
 	for _, client := range clients {
 		switch inbound.Protocol {
-		case "trojan":
+		case "trojan", "masque":
 			if client.Password == "" {
 				return inbound, false, common.NewError("empty client ID")
 			}
@@ -1767,6 +1793,10 @@ func (s *InboundService) validateUpdatedInboundClients(inbound *model.Inbound) e
 			if client.Auth == "" {
 				return common.NewError("empty client ID")
 			}
+		case model.MASQUE:
+			if client.Password == "" {
+				return common.NewError("empty client ID")
+			}
 		case model.TUIC:
 			if client.ID == "" {
 				return common.NewError("empty client ID")
@@ -1791,6 +1821,12 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 		return inbound, false, err
 	}
 	if err := validateFinalMaskXmcProfiles(inbound.StreamSettings); err != nil {
+		return inbound, false, err
+	}
+	if err := validateFinalMaskSalamander(inbound.StreamSettings); err != nil {
+		return inbound, false, err
+	}
+	if err := validateShadowsocks2022Inbound(inbound.Protocol, inbound.Settings); err != nil {
 		return inbound, false, err
 	}
 	s.normalizeMtprotoSecret(inbound)
@@ -2254,7 +2290,7 @@ func (s *InboundService) updateClientTraffics(tx *gorm.DB, oldInbound *model.Inb
 		if _, kept := newEmails[email]; kept {
 			continue
 		}
-		stillUsed, err := s.emailUsedByOtherInbounds(email, oldInbound.Id)
+		stillUsed, err := s.emailUsedByOtherInbounds(tx, email, oldInbound.Id)
 		if err != nil {
 			return err
 		}

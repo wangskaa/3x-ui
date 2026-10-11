@@ -24,6 +24,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v3/internal/logger"
 	"github.com/mhsanaei/3x-ui/v3/internal/tuic"
 	"github.com/mhsanaei/3x-ui/v3/internal/util/common"
+	"github.com/mhsanaei/3x-ui/v3/internal/util/maskcompat"
 	"github.com/mhsanaei/3x-ui/v3/internal/util/random"
 	wgutil "github.com/mhsanaei/3x-ui/v3/internal/util/wireguard"
 	"github.com/mhsanaei/3x-ui/v3/internal/web/service"
@@ -685,7 +686,7 @@ func (s *SubService) getInboundsBySubId(subId string) ([]*model.Inbound, error) 
 		JOIN client_inbounds ON client_inbounds.inbound_id = inbounds.id
 		JOIN clients ON clients.id = client_inbounds.client_id
 		WHERE
-			inbounds.protocol in ('vmess','vless','trojan','shadowsocks','hysteria','wireguard','amneziawg','mtproto','tuic')
+			inbounds.protocol in ('vmess','vless','trojan','shadowsocks','hysteria','wireguard','amneziawg','mtproto','tuic','masque')
 			AND clients.sub_id = ? AND inbounds.enable = ?
 	)`, subId, true).Order("sub_sort_index ASC").Order("id ASC").Find(&inbounds).Error
 	if err != nil {
@@ -816,11 +817,12 @@ func mergeStreamFromMaster(childStream, masterStream string) string {
 	return string(out)
 }
 
-// GetLink dispatches to the protocol-specific generator for one (inbound, client)
-// pair. Returns "" when the inbound's protocol doesn't produce a subscription URL
-// (socks, http, mixed, wireguard, dokodemo, tunnel). The returned string may
-// contain multiple `\n`-separated URLs when the inbound has externalProxy set.
+// GetLink returns one (inbound, client) pair's links, `\n`-separated per externalProxy;
+// "" for a protocol (socks, http, mixed, wireguard, tunnel) or transport (xdrive) without one.
 func (s *SubService) GetLink(inbound *model.Inbound, email string) string {
+	if network, _ := unmarshalStreamSettings(inbound.StreamSettings)["network"].(string); network == "xdrive" {
+		return ""
+	}
 	switch inbound.Protocol {
 	case "vmess":
 		return s.genVmessLink(inbound, email)
@@ -2696,6 +2698,7 @@ var validFinalMaskUDPTypes = map[string]struct{}{
 	"header-custom": {},
 	"realm":         {},
 	"udphop":        {},
+	"sudoku":        {},
 }
 
 var validFinalMaskTCPTypes = map[string]struct{}{
@@ -2853,6 +2856,7 @@ func applyFinalMaskObj(finalmask map[string]any, obj map[string]any) {
 
 func marshalFinalMask(finalmask map[string]any) (string, bool) {
 	normalized := withLegacyFragmentRanges(normalizeFinalMask(finalmask))
+	maskcompat.NormalizeUDPHop(normalized)
 	if !hasFinalMaskContent(normalized) {
 		return "", false
 	}
